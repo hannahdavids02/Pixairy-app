@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Realms of Aether v8.0 - Eldritch</title>
+<style>
+  :root{--bg:#0a0610;--ui:#1a0f2e;--accent:#1aff4d;--text:#ffe}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:monospace;overflow:hidden}
+  #game{position:relative;width:100vw;height:100vh}
+  canvas{display:block;background:radial-gradient(#2b1a47,#0a0610)}
+  #ui{position:absolute;inset:0;pointer-events:none;display:flex;flex-direction:column;justify-content:space-between;padding:8px;font-size:12px}
+  #top{display:flex;justify-content:space-between}
+  #br{color:#f33;font-weight:bold}
+  #bottom{display:flex;gap:6px;flex-wrap:wrap;pointer-events:all}
+  button{background:var(--ui);color:var(--text);border:1px solid var(--accent);padding:6px 10px;border-radius:6px;cursor:pointer;font-size:12px}
+  button.on{background:var(--accent);color:#000}
+  #log{height:80px;overflow-y:auto;background:#0008;padding:4px;border-radius:4px;font-size:11px}
+  #vision{position:absolute;inset:0;mix-blend-mode:screen;pointer-events:none;opacity:0;transition:opacity.8s}
+  #menu{position:absolute;inset:0;background:#000e;display:none;flex-direction:column;align-items:center;justify-content:center;gap:8px;pointer-events:all}
+ .item{border:1px solid var(--accent);padding:4px 8px;width:260px;background:#1a0f2e}
+  #cast{position:absolute;top:4px;left:4px;font-size:10px;opacity:.5;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="game">
+  <canvas id="c"></canvas>
+  <canvas id="vision"></canvas>
+  <div id="ui">
+    <div id="top">
+      <div id="stats"></div>
+      <div id="br"></div>
+    </div>
+    <div id="log"></div>
+    <div id="bottom">
+      <button id="atk">ATTACK [Z]</button>
+      <button id="pow">POWER [X]</button>
+      <button id="ult">ULT [C]</button>
+      <button id="auto">AUTO OFF</button>
+      <button id="br">BR MODE</button>
+      <button id="inv">INVENTORY [I]</button>
+      <button id="wallet">CONNECT WALLET</button>
+      <button id="save">SAVE</button>
+      <button id="load">LOAD</button>
+    </div>
+  </div>
+  <div id="menu">
+    <h2>🎒 INVENTORY + REROLL 100g</h2>
+    <div id="items"></div>
+    <button id="close">CLOSE</button>
+  </div>
+  <div id="cast">
+    MAYA REED | CIPHER | DANIEL WALSH | PRIYA NAIR
+  </div>
+</div>
+
+<script type="module">
+// ======================================================
+// REALMS OF AETHER v8.0 "Eldritch Ascension" - Single File
+// ======================================================
+
+const c=document.getElementById('c'),x=c.getContext('2d');
+const v=document.getElementById('vision'),vx=v.getContext('2d');
+const W=800,H=600;c.width=v.width=W;v.height=H;
+
+const TAU=Math.PI*2;
+let TIME=0,last=0;
+
+// ================== DATA ==================
+const RACES={
+  Fairy:{name:"Fairy",dmg:20,heal:15,cost:10,cd:3,col:"#ff9",ult:"Total Heal",vision:1},
+  Dragon:{name:"Dragon",dmg:40,heal:0,cost:20,cd:5,col:"#f33",ult:"Meteor Rain",vision:2},
+  Eldritch:{name:"Eldritch",dmg:55,heal:0,cost:28,cd:6.5,col:"#1aff4d",ult:"Reality Tear",vision:8,desc:"AoE + Confusion 4s"}
+};
+
+const ARTIFACTS={
+  "Crown of Madness":{slot:"Armor",set:"Abyssal",hp:200,cost:8000},
+  "Tentacle Whip":{slot:"Weapon",set:"Abyssal",dmg:50,cost:8500},
+  "Eye of the Void":{slot:"Relic",set:"Abyssal",ult:50,cost:9000}
+};
+
+const SETS={
+  Abyssal:{2:{chain:2},4:{summons:3}}
+};
+
+const SUBSTATS=["crit_rate","crit_dmg","dmg","hp","ult_rate","heal_bonus"];
+
+// ================== STATE ==================
+let S={
+  coins:100,gems:10,ether:0,race:"Eldritch",lvl:1,xp:0,
+  hp:140,max:140,mp:28,cd:0,ult:0,ultReady:false,
+  inv:{potion:3,shard:0},artifacts:{},equipped:{Weapon:null,Armor:null,Relic:null},
+  cosmetics:["Cosmic Wings"],nft:{},wallet:"",
+  auto:false,br:false,brAlive:100,zone:2000,zoneC:{x:0,y:0},confused:false,
+  enemies:[],bots:[],tentacles:[],log:[]
+};
+
+// ================== UTILS ==================
+const $=id=>document.getElementById(id);
+const log=t=>{S.log.push(t);if(S.log.length>8)S.log.shift();$("log").innerHTML=S.log.join("<br>")};
+const rnd=(a,b)=>Math.random()*(b-a)+a;
+const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+const save=()=>localStorage.setItem("aether",JSON.stringify(S));
+const load=()=>{const d=localStorage.getItem("aether");if(d)S=Object.assign(S,JSON.parse(d))};
+
+function setBonus(k){ // Count Abyssal pieces
+  let count=Object.values(S.equipped).filter(a=>a&&ARTIFACTS[a].set==="Abyssal").length;
+  return count>=4?SETS.Abyssal[4][k]||0:count>=3?SETS.Abyssal[3][k]||0:count>=2?SETS.Abyssal[2][k]||0:0;
+}
+
+// ================== COMBAT ==================
+function basic(){
+  if(!S.enemies[0])return;
+  dmg(S.enemies[0],10+S.lvl*2);
+}
+
+function power(){
+  if(S.cd>0||!S.enemies[0]||S.coins<RACES[S.race].cost)return;
+  S.coins-=RACES[S.race].cost;
+  S.cd=RACES[S.race].cd;
+  let d=RACES[S.race].dmg*(1+S.lvl*0.15);
+
+  if(S.race==="Eldritch"){
+    dmg(S.enemies[0],d);
+    S.enemies[0].conf=4;
+    let chains=setBonus("chain");
+    for(let i=0;i<chains;i++){
+      let n=S.enemies.find(e=>e!=S.enemies[0]&&!e.dead);
+      if(n)n.hp-=d*0.6;
+    }
+  }else dmg(S.enemies[0],d);
+
+  if(RACES[S.race].heal>0)S.hp=Math.min(S.hp+RACES[S.race].heal,S.max);
+  gainUlt(15);
+  update();
+}
+
+function ult(){
+  if(!S.ultReady||!S.enemies[0])return;
+  S.ultReady=false;S.ult=0;
+  log(`${S.race} used ${RACES[S.race].ult}!`);
+  flash();
+
+  if(S.race==="Eldritch"){
+    dmg(S.enemies[0],220);
+    let n=setBonus("summons");
+    for(let i=0;i<n;i++){
+      S.tentacles.push({x:S.enemies[0].x+rnd(-60,60),y:S.enemies[0].y+rnd(-60,60),t:3});
+    }
+  }else if(S.race==="Fairy"){
+    S.hp=S.max;log("Full Heal!");
+  }
+  update();
+}
+
+function dmg(e,amt){
+  e.hp-=amt;
+  if(e.hp<=0){
+    e.dead=true;
+    S.enemies=S.enemies.filter(x=>!x.dead);
+    S.xp+=10;if(S.xp>=20){S.lvl++;S.xp=0;S.max+=5;S.hp=S.max;log(`${S.race} Lvl UP!`)}
+    gainUlt(setBonus("summons")?25:0); // Abyssal 2pc
+    if(Math.random()<0.3)S.coins+=5;
+  }
+}
+
+function gainUlt(amt){S.ult=Math.min(S.ult+amt,S.ult>=100?100:100);S.ultReady=S.ult>=100}
+
+// ================== SYSTEMS ==================
+function autoTick(){
+  if(!S.auto||!S.enemies[0])return;
+  if(S.confused&&Math.random()<0.3)return;
+  if(S.hp<S.max*0.3&&RACES[S.race].heal>0)power();
+  else if(S.ultReady)ult();
+  else if(S.cd<=0)power();
+  else basic();
+}
+
+function reroll(){
+  if(S.gems<100||!S.equipped.Weapon)return;
+  S.gems-=100;
+  let a=S.artifacts[S.equipped.Weapon];
+  let old=Object.keys(a.subs)[0];
+  delete a.subs[old];
+  let ns=SUBSTATS[Math.floor(Math.random()*SUBSTATS.length)];
+  a.subs[ns]=Math.random()>0.5?rnd(0.05,0.15):rnd(5,20);
+  log(`Rerolled ${S.equipped.Weapon}: +${ns}`);
+  renderInv();
+}
+
+function spawnEnemy(){
+  S.enemies=[{x:W/2,y:H/2-80,hp:80+S.lvl*10,max:80+S.lvl*10,conf:0,dead:false}];
+}
+
+function spawnBR(){
+  S.br=true;S.brAlive=100;S.zone=2000;S.zoneC={x:0,y:0};
+  S.bots=Array.from({length:99},(_,i)=>({x:rnd(-1800,1800),y:rnd(-1800,1800),hp:50,dead:false,id:i}));
+  log("BR: 100 players, 1 winner!");
+  $("br").textContent="BR MODE: 100/100";
+}
+
+// ================== NFT/WALLET STUB ==================
+async function connectWallet(){
+  if(!window.ethereum)return log("No MetaMask");
+  const acc=await window.ethereum.request({method:"eth_requestAccounts"});
+  S.wallet=acc[0];
+  S.nft["Cosmic Wings"]={token:"1",owner:S.wallet};
+  if(!S.cosmetics.includes("Cosmic Wings"))S.cosmetics.push("Cosmic Wings");
+  log("Wallet: "+S.wallet.slice(0,6)+"... NFT unlocked");
+  $("wallet").textContent="Wallet "+S.wallet.slice(0,4);
+}
+
+// ================== UI ==================
+function renderInv(){
+  $("items").innerHTML=Object.entries(S.artifacts).map(([n,d])=>
+    `<div class="item">${n} ${Object.entries(d.subs).map(([k,v])=>`${k}:${v.toFixed(2)}`).join(" ")}
+     <button onclick="equip('${n}')">EQUIP</button></div>`
+  ).join("")+`<div class="item">🧪 Potion x${S.inv.potion} <button onclick="usePot()">USE</button></div>`;
+}
+
+window.equip=n=>{ARTIFACTS[n]&&(S.equipped[ARTIFACTS[n].slot]=n);renderInv()};
+window.usePot=()=>{if(S.inv.potion){S.inv.potion--;S.hp=Math.min(S.hp+15,S.max);renderInv()}};
+
+function update(){
+  $("stats").innerHTML=`${S.race} L${S.lvl} | HP:${Math.floor(S.hp)}/${S.max} | CD:${S.cd.toFixed(1)} | ULT:${Math.floor(S.ult)}% | 💰${S.coins} 💎${S.gems}`;
+  $("br").textContent=S.br?`BR: ${S.brAlive}/100`:"";
+}
+
+// ================== RENDER ==================
+function draw(){
+  x.clearRect(0,0,W,H);
+  // Ground
+  x.fillStyle="#5a3a7a";x.fillRect(0,H-40,W,40);
+
+  // Player
+  x.fillStyle=RACES[S.race].col;
+  x.beginPath();x.arc(W/2,H-60,16,0,TAU);x.fill();
+  x.fillStyle="#fff";x.fillRect(W/2-6,H-72,4,4);x.fillRect(W/2+2,H-72,4,4); // eyes
+
+  // Enemy
+  S.enemies.forEach(e=>{
+    x.fillStyle=e.conf>0?"#fa7":"#f33";
+    x.fillRect(e.x-16,e.y-16,32,32);
+    x.fillStyle="#000";x.fillRect(e.x-10,e.y+10,(e.hp/e.max)*20,4);
+  });
+
+  // Tentacles
+  x.strokeStyle="#1aff4d";x.lineWidth=3;
+  S.tentacles.forEach(t=>{
+    x.beginPath();x.moveTo(W/2,H-60);
+    for(let i=0;i<5;i++)x.lineTo(t.x+rnd(-10,10),t.y-i*10);
+    x.stroke();
+  });
+
+  // BR Bots
+  if(S.br){
+    x.fillStyle="#555";
+    S.bots.forEach(b=>{if(!b.dead&&dist(b,S.zoneC)<S.zone)x.fillRect(W/2+b.x/10,H-60+b.y/10,3,3)});
+    x.strokeStyle="#f33";x.beginPath();x.arc(W/2+S.zoneC.x/10,H-60+S.zoneC.y/10,S.zone/10,0,TAU);x.stroke();
+  }
+}
+
+function drawVision(){
+  if(RACES[S.race].vision!==8){v.style.opacity=0;return}
+  vx.clearRect(0,0,W,H);
+  const g=vx.createRadialGradient(W/2,H/2,10,W/2,H/2,300);
+  g.addColorStop(0,"#1aff4d");g.addColorStop(1,"#0000");
+  vx.fillStyle=g;vx.fillRect(0,0,W,H);
+  vx.globalAlpha=0.3+Math.sin(TIME*10)*0.1;
+  for(let i=0;i<8;i++){
+    let a=TIME*2+i*Math.PI/4;
+    vx.beginPath();vx.moveTo(W/2,H/2);
+    vx.lineTo(W/2+Math.cos(a)*200+Math.sin(TIME*5+i)*30,H/2+Math.sin(a)*200);
+    vx.strokeStyle="#1aff4d";vx.stroke();
+  }
+  v.style.opacity=0.7;
+}
+
+// ================== LOOP ==================
+function tick(dt){
+  TIME+=dt;
+  if(S.cd>0)S.cd=Math.max(0,S.cd-dt);
+  S.enemies.forEach(e=>{if(e.conf>0)e.conf=Math.max(0,e.conf-dt);if(e.conf>0)S.confused=true});
+  if(!S.enemies.some(e=>e.conf>0))S.confused=false;
+  S.tentacles=S.tentacles.filter(t=>{t.t-=dt;return t.t>0});
+
+  if(S.br){
+    S.bots.forEach(b=>{if(!b.dead&&dist(b,S.zoneC)>S.zone)b.hp-=dt*10;if(b.hp<=0)b.dead=true});
+    S.brAlive=S.bots.filter(b=>!b.dead).length+1;
+    $("br").textContent=`BR: ${S.brAlive}/100`;
+    if(S.brAlive<=1){S.br=false;log("VICTORY ROYALE! +50 gems");S.gems+=50;S.ether+=10}
+  }
+
+  draw();drawVision();
+}
+
+function loop(ts){
+  let dt=(ts-last)/1000;last=ts;
+  tick(dt);
+  requestAnimationFrame(loop);
+}
+
+// ================== INPUT ==================
+onkeydown=e=>{
+  if(e.code==="KeyZ")basic();
+  if(e.code==="KeyX")power();
+  if(e.code==="KeyC")ult();
+  if(e.code==="KeyI")$("menu").style.display=$("menu").style.display==="flex"?"none":"flex";
+};
+
+$("atk").onclick=basic;
+$("pow").onclick=power;
+$("ult").onclick=ult;
+$("auto").onclick=()=>{S.auto=!S.auto;$("auto").classList.toggle("on");$("auto").textContent=S.auto?"AUTO ON":"AUTO OFF"};
+$("br").onclick=spawnBR;
+$("inv").onclick=()=>{$("menu").style.display="flex";renderInv()};
+$("close").onclick=()=>$("menu").style.display="none";
+$("wallet").onclick=connectWallet;
+$("save").onclick=save;
+$("load").onclick=()=>{load();log("Loaded");update()};
+
+// Init
+S.artifacts={"Tentacle Whip":{subs:{dmg:12}}};
+S.equipped.Weapon="Tentacle Whip";
+spawnEnemy();
+update();
+setInterval(autoTick,500);
+requestAnimationFrame(loop);
+</script>
+</body>
+  </html>
